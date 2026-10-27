@@ -2923,4 +2923,64 @@ class WC_Abstract_Order_Test extends WC_Unit_Test_Case {
 
 		$this->assertSame( $status, wc_get_order( $order->get_id() )->get_status() );
 	}
+
+	/**
+	 * @testdox Should keep a paid order's status, payment state and stock when given an unregistered status.
+	 * @testWith ["not-a-status"]
+	 *           ["wc-not-a-status"]
+	 *           [""]
+	 *
+	 * @param string $invalid_status A status that isn't registered.
+	 */
+	public function test_unregistered_status_leaves_a_paid_order_unchanged( string $invalid_status ): void {
+		$product = WC_Helper_Product::create_simple_product();
+		$product->set_manage_stock( true );
+		$product->set_stock_quantity( 10 );
+		$product->save();
+
+		// The helper adds 4 of the product; completing payment reduces stock through the real hook.
+		$order = WC_Helper_Order::create_order( 1, $product );
+		$order->payment_complete();
+
+		$paid_date = $order->get_date_paid();
+		$this->assertSame( OrderStatus::PROCESSING, $order->get_status(), 'Payment should move the order to processing.' );
+		$this->assertNotNull( $paid_date, 'Payment should record a paid date.' );
+		$this->assertSame( 6, wc_get_product( $product->get_id() )->get_stock_quantity(), 'Payment should reduce stock.' );
+
+		$pending_actions = did_action( 'woocommerce_order_status_pending' );
+		$changed_actions = did_action( 'woocommerce_order_status_changed' );
+
+		$this->setExpectedIncorrectUsage( 'WC_Abstract_Order::set_status' );
+		$order->update_status( $invalid_status );
+
+		$reloaded_order = wc_get_order( $order->get_id() );
+		$this->assertSame( OrderStatus::PROCESSING, $reloaded_order->get_status(), 'The order should keep its status.' );
+
+		$reloaded_paid_date = $reloaded_order->get_date_paid();
+		$this->assertNotNull( $reloaded_paid_date, 'The paid date should remain set.' );
+		$this->assertSame( $paid_date->getTimestamp(), $reloaded_paid_date->getTimestamp(), 'The paid date should be unchanged.' );
+
+		$this->assertFalse( $reloaded_order->needs_payment(), 'The order should not ask for payment again.' );
+		$this->assertSame( 6, wc_get_product( $product->get_id() )->get_stock_quantity(), 'Stock should not be restored.' );
+		$this->assertSame( $pending_actions, did_action( 'woocommerce_order_status_pending' ), 'No transition to pending should fire.' );
+		$this->assertSame( $changed_actions, did_action( 'woocommerce_order_status_changed' ), 'No status change should fire.' );
+	}
+
+	/**
+	 * @testdox Should still fall back to pending, without a warning, when the current status isn't registered either.
+	 * @testWith ["legacy-status"]
+	 *           ["auto-draft"]
+	 *
+	 * @param string $current_status A current status that isn't a registered order status.
+	 */
+	public function test_unregistered_status_falls_back_to_pending_when_current_status_is_unregistered( string $current_status ): void {
+		$order = new WC_Order();
+		$order->set_object_read( false );
+		$order->set_status( $current_status );
+		$order->set_object_read( true );
+
+		$order->set_status( 'not-a-status' );
+
+		$this->assertSame( OrderStatus::PENDING, $order->get_status(), 'An order without a registered status should fall back to pending.' );
+	}
 }
